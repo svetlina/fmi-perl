@@ -25,10 +25,20 @@ my ($server_reply,$client_msg);
 
 while(<STDIN>){
 	$client_msg=$_;
+
+	if($client_msg=~ /^quit$/){
+		$client_socket->close();
+		exit(0);
+	}
 	$client_socket->send($client_msg);
 
 	$client_socket->recv($server_reply,1024);
+
 	say "$server_reply";
+	if($server_reply=~ /^quit$/){
+		$client_socket->close();
+		exit(0);
+	}
 }
 
 sleep (10);
