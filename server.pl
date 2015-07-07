@@ -3,6 +3,7 @@
 use v5.012;
 use DBI;
 use IO::Socket::INET;
+use IPC::Shareable;
 
 my ($sth,$dbh);
 &dbi_connect();
@@ -27,8 +28,21 @@ say "SERVER Waiting for client connection on port $server_port - pid $$";
 
 my $client_count=-1;
 
+my $glue = 'data';
+my %options = (
+	create    => 'yes',
+	exclusive => 0,
+	mode      => 0644,
+	destroy   => '1',
+);
+
+my %online_users;
+tie %online_users, 'IPC::Shareable', $glue, { %options };
+
+my @client_pids;
+
 while(my $client = $server_socket->accept()){ # waiting for new client connection.
-	my $pid = fork(); 
+	my $pid = fork();
     die "Cannot fork: $!" unless defined($pid);
 
     if($pid == 0){  # Child process  
@@ -36,12 +50,22 @@ while(my $client = $server_socket->accept()){ # waiting for new client connectio
 		my $client_port = $client->peerport();
 
 		say "Accepted new client connection from : $client_host, $client_port ";
+		say "pid $$";
+		push(@client_pids, $$);
 
 		$client->send("Welcome! Type help for command list.\n");
 
-		my ($data,$users);
+		my $data;
 		while(<$client>){
 			$data=$_;
+			say $data;
+
+			if($data =~ m/quit_all/i){
+				foreach my $pid(@client_pids){
+					my $parent_pid=getppid();
+					`kill -9 $parent_pid`;
+				}
+			}	
 
 			if($data =~ /^user\s(.*)/){
 				my $registered;
@@ -50,17 +74,15 @@ while(my $client = $server_socket->accept()){ # waiting for new client connectio
 				if($sth->execute() > 0){
 					$registered=1;
 				}else{
+					$client->send("registering...");
 					$sth=$dbh->do("INSERT INTO users SET name='$1';");
 				}
-				$users->{$1}=1;
-				$client->send("Hello, $1!");
-			}elsif($data=~ /^list\sonline/){
-				foreach my $user(%{$users}){
-					$client->send($user);
-				}
-			}elsif($data =~ m/quit|exit/i){
-				$client->close();
-				exit(0);
+				$online_users{"$1"}=1;
+				$client->send("Hello, $1!");				
+			}elsif($data=~ /^online/){
+				foreach my $user(sort keys %online_users){
+					$client->send("$user\n");
+				}				
 			}elsif($data =~ m/date|time/i){
 				printf $client "%s\n", scalar localtime();
 			}elsif($data =~ m/who/i){
@@ -68,16 +90,20 @@ while(my $client = $server_socket->accept()){ # waiting for new client connectio
 			}elsif($data =~ m/ls/i){
 				print $client `ls`;					
 			}elsif($data =~ m/help/i){
-				$client->send("Commands: user date who ls help quit\n");
+				$client->send("Commands: user date online who ls help quit quit_all \n");
 			}elsif($data =~ m/\S/){
 				$client->send("Command?");
+			}elsif($data=~ m/quit_all/){
+
 			}
 		}
 		exit(0);# Child process exits when it is done.
 		sleep(10);
 		$client->close() or warn "Couldn't close $client_host connection $!";
 	} # else 'tis the parent process, which goes back to accept()
-}	
+}
+
+IPC::Shareable->clean_up_all();	
 
 sleep(10);
 $server_socket->close();
